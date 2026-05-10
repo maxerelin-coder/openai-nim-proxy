@@ -1,4 +1,4 @@
-// server.js - Clean NVIDIA NIM Proxy for Janitor.AI
+// server.js - Fixed NVIDIA NIM Proxy
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -8,13 +8,12 @@ const PORT = process.env.PORT || 3000;
 // ====================== CONFIG ======================
 const NIM_API_BASE = 'https://integrate.api.nvidia.com/v1';
 
-// 🔥 PUT YOUR API KEY HERE
-const NIM_API_KEY = "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";   // ← Replace this
+const NIM_API_KEY = "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";   // ← Replace with your key
 
-const SHOW_REASONING = true;      // Show <think> tags
-const ENABLE_THINKING = true;     // Enable model thinking
+const SHOW_REASONING = true;
+const ENABLE_THINKING = true;     // Global toggle
 
-// Safe context limit to prevent 400 errors
+// Safe context limit
 const MAX_CONTEXT_TOKENS = 120000;
 const RESERVED_FOR_OUTPUT = 8000;
 
@@ -25,16 +24,10 @@ app.use(express.json());
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'NVIDIA NIM Proxy',
-    max_context: MAX_CONTEXT_TOKENS,
-    thinking: ENABLE_THINKING,
-    show_reasoning: SHOW_REASONING
-  });
+  res.json({ status: 'ok', max_context: MAX_CONTEXT_TOKENS });
 });
 
-// List models
+// Models list
 app.get('/v1/models', (req, res) => {
   res.json({ object: 'list', data: [{ id: 'mistral-large-3', object: 'model' }] });
 });
@@ -50,6 +43,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       nimModel = 'mistralai/mistral-large-3-675b-instruct-2512';
     } else if (model.includes('nemotron')) {
       nimModel = 'mistralai/mistral-nemotron';
+    } else if (model.includes('minimax')) {
+      nimModel = model;   // Use as-is for Minimax
     }
 
     // === Context Truncation ===
@@ -70,22 +65,28 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     console.log(`[Proxy] Messages: ${messages.length} → ${processedMessages.length} (~${totalTokens} tokens)`);
 
-    // Build request - only pass what Janitor sends
+    // Build request
     const nimRequest = {
       model: nimModel,
       messages: processedMessages,
-      temperature: temperature ?? 0.82,     // fallback only if Janitor doesn't send it
+      temperature: temperature ?? 0.82,
       max_tokens: max_tokens ?? 1024,
       stream: stream || false,
     };
 
-    if (ENABLE_THINKING) {
+    // 🔥 Only add extra_body for models that support thinking
+    const supportsThinking = model.includes('large-3') || 
+                            model.includes('mistral-large') || 
+                            model.includes('nemotron');
+
+    if (ENABLE_THINKING && supportsThinking) {
       nimRequest.extra_body = {
         chat_template_kwargs: { thinking: true }
       };
+      console.log(`[Proxy] Thinking enabled for ${model}`);
     }
 
-    // Call NIM
+    // Call NVIDIA NIM
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
       headers: {
         'Authorization': `Bearer ${NIM_API_KEY}`,
@@ -94,7 +95,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       responseType: stream ? 'stream' : 'json'
     });
 
-    // Streaming handler
+    // Streaming handler (same as before)
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -118,7 +119,9 @@ app.post('/v1/chat/completions', async (req, res) => {
                 const delta = data.choices[0].delta;
                 if (delta.reasoning_content || delta.thinking) {
                   const think = delta.reasoning_content || delta.thinking || '';
-                  if (think) delta.content = `<think>\n${think}\n</think>\n\n${delta.content || ''}`;
+                  if (think) {
+                    delta.content = `<think>\n${think}\n</think>\n\n${delta.content || ''}`;
+                  }
                   delete delta.reasoning_content;
                   delete delta.thinking;
                 }
@@ -135,7 +138,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       response.data.on('error', () => res.end());
 
     } else {
-      // Non-stream response
       const openaiResponse = {
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
@@ -169,6 +171,4 @@ app.post('/v1/chat/completions', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 NVIDIA NIM Proxy running on http://localhost:${PORT}`);
-  console.log(`   Max Context limited to ${MAX_CONTEXT_TOKENS} tokens`);
-  console.log(`   Thinking: ${ENABLE_THINKING ? 'ON' : 'OFF'} | Show reasoning: ${SHOW_REASONING ? 'ON' : 'OFF'}`);
 });
